@@ -61,12 +61,13 @@ tr.me td{background:var(--key);font-weight:800}
 .tile.back{transition:transform .25s}
 .tile.right{background:var(--ok)!important;box-shadow:0 5px 0 #17744d!important}
 tr.pl{cursor:pointer}tr.pl:active td{background:var(--key)}
+.btn.red{background:var(--bad)}.mini{border:0;border-radius:10px;padding:6px 10px;background:#ffd8d9;color:#8a1c20;font-weight:700;cursor:pointer}
 .chip small{font-weight:400;opacity:.8;font-size:12px}
 </style></head><body>
 <div class="app">
 
 <section class="screen on" id="home">
- <h1>⭐ Math Stars ⭐</h1><p class="sub">Practice math and letters, beat the clock, climb the leaderboard!</p>
+ <h1 id="title" style="-webkit-touch-callout:none">⭐ Math Stars ⭐</h1><p class="sub">Practice math and letters, beat the clock, climb the leaderboard!</p>
  <div class="card"><label class="t">What's your name?</label><input type="text" id="name" maxlength="14" placeholder="Type your name" autocomplete="off"></div>
  <div class="card"><label class="t">Grade</label><div class="chips" id="gradeChips"></div></div>
  <div class="card"><label class="t">Number of questions</label><div class="chips" id="countChips"></div></div>
@@ -114,6 +115,12 @@ tr.pl{cursor:pointer}tr.pl:active td{background:var(--key)}
  <div id="progBody"></div>
  <button class="btn alt" id="progBack">← Back</button>
 </section>
+
+<section class="screen" id="admin">
+ <h2>🔒 Parent menu</h2>
+ <div id="admBody"></div>
+ <button class="btn alt" id="admBack">← Back to game</button>
+</section>
 </div>
 <button class="mute" id="mute" aria-label="Sound">🔊</button>
 
@@ -158,17 +165,33 @@ function prune(list){
  var cut=list.length-400;
  return list.map(function(r,i){return i<cut&&r.log?compact(r):r});
 }
-function getRemote(){return fetch(API+'?t='+Date.now()+Math.random().toString(36).slice(2,6),{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('get '+r.status);return r.json()}).then(function(d){return d&&Array.isArray(d.runs)?d.runs.filter(okRun):[]})}
-function putRemote(list){return fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({v:1,runs:list})}).then(function(r){if(!r.ok)throw new Error('put '+r.status)})}
+var DEF_META={del:{names:{},boards:{},all:0},admin:null};
+function normMeta(m){m=m&&typeof m==='object'?m:{};var d=m.del&&typeof m.del==='object'?m.del:{},o={del:{names:{},boards:{},all:+d.all||0},admin:null};
+ ['names','boards'].forEach(function(f){var s=d[f]&&typeof d[f]==='object'?d[f]:{};Object.keys(s).forEach(function(k){if(+s[k]>0)o.del[f][k]=+s[k]})});
+ var a=m.admin;if(a&&typeof a.salt==='string'&&typeof a.hash==='string')o.admin={salt:a.salt,hash:a.hash,t:+a.t||0};return o}
+function mergeMeta(a,b){a=normMeta(a);b=normMeta(b);var o=normMeta(a);o.del.all=Math.max(a.del.all,b.del.all);
+ ['names','boards'].forEach(function(f){Object.keys(b.del[f]).forEach(function(k){o.del[f][k]=Math.max(o.del[f][k]||0,b.del[f][k])})});
+ o.admin=!a.admin?b.admin:!b.admin?a.admin:(b.admin.t>a.admin.t?b.admin:a.admin);return o}
+function stable(v){if(v&&typeof v==='object'&&!Array.isArray(v))return '{'+Object.keys(v).sort().map(function(k){return JSON.stringify(k)+':'+stable(v[k])}).join(',')+'}';return JSON.stringify(v)}
+function metaKey(m){return stable(normMeta(m))}
+var meta=normMeta(load('ms_meta',DEF_META));
+function dead(r,m){m=m||meta;return r.date<=m.del.all||r.date<=(m.del.boards[r.grade+'|'+r.count]||0)||r.date<=(m.del.names[String(r.name).trim().toLowerCase()]||0)}
+function alive(list,m){return list.filter(function(r){return !dead(r,m)})}
+runs=alive(runs);
+function getRemote(){return fetch(API+'?t='+Date.now()+Math.random().toString(36).slice(2,6),{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('get '+r.status);return r.json()}).then(function(d){d=d&&typeof d==='object'?d:{};return {runs:Array.isArray(d.runs)?d.runs.filter(okRun):[],meta:normMeta(d)}})}
+function putRemote(list,m){return fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({v:1,runs:list,del:m.del,admin:m.admin})}).then(function(r){if(!r.ok)throw new Error('put '+r.status)})}
 function has(list){var m={};list.forEach(function(r){m[r.id]=1});return m}
 function attempt(n){
  return getRemote().then(function(remote){
-  var ids=has(remote),miss=runs.filter(function(r){return !ids[r.id]});
-  if(!miss.length)return remote;
-  var merged=prune(merge(remote,runs));
-  return putRemote(merged).then(function(){return sleep(300)}).then(getRemote).then(function(chk){
-   var c=has(chk),lost=miss.filter(function(r){return !c[r.id]});
-   if(!lost.length)return chk;
+  var M=mergeMeta(remote.meta,meta),local=alive(runs,M),rem=alive(remote.runs,M);
+  var ids=has(rem),miss=local.filter(function(r){return !ids[r.id]});
+  var needMeta=metaKey(M)!==metaKey(remote.meta),needClean=rem.length<remote.runs.length;
+  if(!miss.length&&!needMeta&&!needClean)return {runs:rem,meta:M};
+  var merged=prune(merge(rem,local));
+  return putRemote(merged,M).then(function(){return sleep(300)}).then(getRemote).then(function(chk){
+   var c=has(chk.runs),lost=miss.filter(function(r){return !c[r.id]});
+   var metaOk=metaKey(mergeMeta(chk.meta,M))===metaKey(chk.meta),cleanOk=alive(chk.runs,M).length===chk.runs.length;
+   if(!lost.length&&metaOk&&cleanOk)return {runs:chk.runs,meta:chk.meta};
    if(n>=4)throw new Error('conflict');
    return sleep(rnd(300,1500)).then(function(){return attempt(n+1)});  // someone else wrote at the same moment: read, add, write again
   });
@@ -176,12 +199,13 @@ function attempt(n){
 }
 function sync(){
  if(syncing){syncAgain=true;return syncing}
- syncing=attempt(0).then(function(remote){
-  runs=prune(merge(remote,runs));save('ms_runs',runs);online=true;
+ syncing=attempt(0).then(function(res){
+  meta=mergeMeta(res.meta,meta);save('ms_meta',meta);
+  runs=prune(merge(alive(res.runs),alive(runs)));save('ms_runs',runs);online=true;
  },function(){online=false}).then(function(){syncing=null;refreshViews();if(syncAgain){syncAgain=false;return sync()}});
  return syncing;
 }
-window.__msSync=sync;window.__msState=function(){return {online:online,runs:runs.length,board:BOARD}};
+window.__msSync=sync;window.__msState=function(){return {online:online,runs:runs.length,board:BOARD,meta:meta}};
 function refreshViews(){var a=document.querySelector('.screen.on');if(!a)return;if(a.id==='lb')drawLb();else if(a.id==='prog')drawProg();else if(a.id==='home')mine();else if(a.id==='result')showRank()}
 window.addEventListener('online',sync);
 document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')sync()});
@@ -502,6 +526,67 @@ function openProg(){P.k=null;drawProg();show('prog');sync()}
 $('toProg').onclick=openProg;$('rProg').onclick=openProg;
 $('progBack').onclick=function(){click();if(P.k){P.k=null;drawProg();window.scrollTo(0,0)}else show('home')};
 $('rLb').onclick=openLb;$('lbBack').onclick=function(){show('home')};
+/* ---------- parent admin menu (hidden: hold the title 3 seconds, or tap it 5 times) ---------- */
+var REC_SALT='d37bc16e297b12120e71400c',REC_HASH='a05eeec3436fabc5dcc6caa2274156d309f1226939019cf675c71de315c592d7';
+function sha(t){return crypto.subtle.digest('SHA-256',new TextEncoder().encode(t)).then(function(b){return Array.prototype.map.call(new Uint8Array(b),function(x){return ('0'+x.toString(16)).slice(-2)}).join('')})}
+function rhex(n){var a=new Uint8Array(n);crypto.getRandomValues(a);return Array.prototype.map.call(a,function(x){return ('0'+x.toString(16)).slice(-2)}).join('')}
+var AD={ok:false,view:'',msg:'',g:1,c:10,fails:0,until:0,confirm:null};
+(function(){var h=$('title'),taps=[],lp=null;
+ h.addEventListener('pointerdown',function(){clearTimeout(lp);lp=setTimeout(function(){lp=null;taps=[];openAdmin()},3000);
+  var now=Date.now();taps=taps.filter(function(t){return now-t<2500});taps.push(now);if(taps.length>=5){taps=[];clearTimeout(lp);openAdmin()}});
+ ['pointerup','pointerleave','pointercancel'].forEach(function(e){h.addEventListener(e,function(){clearTimeout(lp)})});
+ h.addEventListener('contextmenu',function(e){e.preventDefault()});
+})();
+function openAdmin(){AD.ok=false;AD.msg='';AD.view='load';show('admin');drawAdmin();
+ sync().then(function(){AD.view=meta.admin?'enter':(online===true?'set':'offline');drawAdmin()})}
+function pinIn(id,ph){return '<input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" id="'+id+'" placeholder="'+ph+'" style="margin:6px 0">'}
+function setPin(p1,p2){
+ if(!/^\d{4,6}$/.test(p1))return Promise.reject('The PIN must be 4 to 6 numbers.');if(p1!==p2)return Promise.reject('The two PINs don\'t match.');
+ var salt=rhex(16);return sha(salt+':'+p1).then(function(h){meta.admin={salt:salt,hash:h,t:Date.now()};save('ms_meta',meta);return sync()});
+}
+function drawAdmin(){
+ var el=$('admBody'),v=AD.view,h='',m=AD.msg?'<p class="fb" style="color:'+(AD.msgOk?'var(--ok)':'var(--bad)')+'">'+esc(AD.msg)+'</p>':'';
+ if(v==='load')h='<div class="card"><p class="big">⏳ Checking…</p></div>';
+ else if(v==='offline')h='<div class="card"><p class="big">Connect to the internet to set up the parent PIN.</p></div>';
+ else if(v==='set'||v==='change')h='<div class="card"><label class="t">'+(v==='set'?'Create a parent PIN (4–6 numbers). It works on every phone.':'Choose a new PIN')+'</label>'+pinIn('p1','New PIN')+pinIn('p2','Type it again')+m+'<button class="btn" id="aSet">Save PIN</button>'+(v==='change'?'<button class="btn alt" id="aCancel">Cancel</button>':'')+'</div>';
+ else if(v==='enter')h='<div class="card"><label class="t">Enter the parent PIN</label>'+pinIn('p0','PIN')+m+'<button class="btn" id="aEnter">Unlock 🔓</button><button class="btn alt" id="aForgot" style="font-size:16px;padding:10px">Forgot PIN?</button></div>';
+ else if(v==='recover')h='<div class="card"><label class="t">Reset the PIN with the recovery code</label><input type="text" id="rc" maxlength="12" autocomplete="off" autocapitalize="characters" placeholder="Recovery code" style="margin:6px 0">'+pinIn('p1','New PIN')+pinIn('p2','Type it again')+m+'<button class="btn" id="aRec">Reset PIN</button><button class="btn alt" id="aCancel">Cancel</button></div>';
+ else if(v==='confirm'){var c=AD.confirm;h='<div class="card"><p class="big">⚠️ '+esc(c.text)+'</p><p class="small">This can\'t be undone and removes it from every phone.</p><label class="t">Type DELETE to confirm</label><input type="text" id="cf" autocomplete="off" autocapitalize="characters" placeholder="DELETE">'+m+'<button class="btn red" id="aDo">Delete</button><button class="btn alt" id="aCancel">Cancel</button></div>'}
+ else if(v==='menu'){
+  var pl=playerList();
+  h=m+'<div class="card"><label class="t">👥 Players</label>'+(pl.length?'<table><tr><th>Player</th><th>Games</th><th></th></tr>'+pl.map(function(p){return '<tr><td>'+esc(p.name)+'</td><td>'+p.games+'</td><td><button class="mini" data-del="'+esc(p.k)+'">🗑 Delete</button></td></tr>'}).join('')+'</table>':'<p class="small">No players yet.</p>')+'</div>';
+  h+='<div class="card"><label class="t">🏆 Clear one leaderboard</label><div class="chips" id="aG"></div><div class="chips" id="aC" style="margin-top:8px"></div><button class="btn red" id="aClr1">Clear this leaderboard</button></div>';
+  h+='<div class="card"><label class="t">🧹 Everything</label><button class="btn red" id="aClrAll">Clear ALL leaderboards and scores</button></div>';
+  h+='<div class="card"><button class="btn alt" id="aChg">🔑 Change PIN</button><p class="small">'+(online===true?'☁️ Online — changes go to every phone.':'📱 Offline — changes will sync when online.')+'</p></div>';
+ }
+ el.innerHTML=h;
+ var b=function(id,f){var x=$(id);if(x)x.onclick=function(){click();f()}};
+ b('aCancel',function(){AD.msg='';AD.view=AD.ok?'menu':'enter';drawAdmin()});
+ b('aSet',function(){setPin($('p1').value,$('p2').value).then(function(){AD.ok=true;AD.view='menu';AD.msg='PIN saved ✓';AD.msgOk=1;drawAdmin()},function(e){AD.msg=String(e);AD.msgOk=0;drawAdmin()})});
+ b('aEnter',function(){
+  if(Date.now()<AD.until){AD.msg='Too many tries. Wait a moment.';AD.msgOk=0;return drawAdmin()}
+  var p=$('p0').value;sha(meta.admin.salt+':'+p).then(function(hh){
+   if(hh===meta.admin.hash){AD.ok=true;AD.fails=0;AD.view='menu';AD.msg='';drawAdmin()}
+   else{AD.fails++;if(AD.fails>=5){AD.until=Date.now()+30000;AD.fails=0}AD.msg='Wrong PIN.';AD.msgOk=0;drawAdmin()}})});
+ b('aForgot',function(){AD.view='recover';AD.msg='';drawAdmin()});
+ b('aRec',function(){var code=$('rc').value.replace(/\s+/g,'').toUpperCase(),p1=$('p1').value,p2=$('p2').value;
+  sha(REC_SALT+':'+code).then(function(hh){if(hh!==REC_HASH)throw 'That recovery code is not right.';return setPin(p1,p2)}).then(function(){AD.ok=true;AD.view='menu';AD.msg='New PIN saved ✓';AD.msgOk=1;drawAdmin()},function(e){AD.msg=String(e);AD.msgOk=0;drawAdmin()})});
+ b('aChg',function(){AD.view='change';AD.msg='';drawAdmin()});
+ b('aDo',function(){if($('cf').value.trim().toUpperCase()!=='DELETE'){AD.msg='Type DELETE to confirm.';AD.msgOk=0;return drawAdmin()}
+  var c=AD.confirm,before=runs.length;c.apply();save('ms_meta',meta);runs=alive(runs);save('ms_runs',runs);if(lastRun&&dead(lastRun))lastRun=null;
+  var n=before-runs.length;AD.view='menu';AD.msg='Working…';AD.msgOk=1;drawAdmin();
+  sync().then(function(){AD.msg='Done ✓ Removed '+n+' game'+(n===1?'':'s')+(online===true?' from every phone.':'. Saved here — it will sync when online.');AD.msgOk=online===true;drawAdmin()})});
+ if(v==='menu'){
+  chips($('aG'),GRADES,AD.g,function(g){return gl(g)+badge(players(g))},function(x){AD.g=x;drawAdmin()});
+  chips($('aC'),COUNTS,AD.c,function(c){return c+badge(players(AD.g,c))},function(x){AD.c=x;drawAdmin()});
+  var maxDate=function(f){return runs.filter(f).reduce(function(s,r){return Math.max(s,r.date)},Date.now())};
+  el.querySelectorAll('[data-del]').forEach(function(x){x.onclick=function(){click();var k=x.getAttribute('data-del'),nm=(playerList().filter(function(p){return p.k===k})[0]||{}).name||k;
+   AD.confirm={text:'Delete '+nm+' and all of their games?',apply:function(){meta.del.names[k]=Math.max(meta.del.names[k]||0,maxDate(function(r){return nk(r.name)===k}))}};AD.view='confirm';AD.msg='';drawAdmin()}});
+  b('aClr1',function(){var g=AD.g,c=AD.c,key=g+'|'+c;AD.confirm={text:'Clear the '+gl(g)+' · '+c+' questions leaderboard (those games are removed)?',apply:function(){meta.del.boards[key]=Math.max(meta.del.boards[key]||0,maxDate(function(r){return r.grade===g&&r.count===c}))}};AD.view='confirm';AD.msg='';drawAdmin()});
+  b('aClrAll',function(){AD.confirm={text:'Clear ALL leaderboards and every score for every player?',apply:function(){meta.del.all=Math.max(meta.del.all,maxDate(function(){return true}))}};AD.view='confirm';AD.msg='';drawAdmin()});
+ }
+}
+$('admBack').onclick=function(){AD.ok=false;AD.view='';show('home')};
 mine();sync();
 })();
 </script>
