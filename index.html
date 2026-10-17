@@ -60,6 +60,7 @@ tr.me td{background:var(--key);font-weight:800}
 .tile.drag{z-index:20;cursor:grabbing;box-shadow:0 14px 26px rgba(0,0,0,.3)}
 .tile.back{transition:transform .25s}
 .tile.right{background:var(--ok)!important;box-shadow:0 5px 0 #17744d!important}
+tr.pl{cursor:pointer}tr.pl:active td{background:var(--key)}
 .chip small{font-weight:400;opacity:.8;font-size:12px}
 </style></head><body>
 <div class="app">
@@ -109,8 +110,7 @@ tr.me td{background:var(--key);font-weight:800}
 </section>
 
 <section class="screen" id="prog">
- <h2>📊 My Progress</h2>
- <div class="card"><label class="t">Player</label><div class="chips" id="progChips"></div></div>
+ <h2 id="progTitle">📊 My Progress</h2>
  <div id="progBody"></div>
  <button class="btn alt" id="progBack">← Back</button>
 </section>
@@ -140,13 +140,23 @@ var BOARD=(location.search.match(/[?&]board=([0-9a-f]{20})/)||[])[1]||'0d0e76285
 var API='https://api.npoint.io/'+BOARD;
 var online=null,syncing=null,syncAgain=false,lastRun=null;
 function okRun(r){return r&&typeof r==='object'&&r.id&&typeof r.name==='string'&&r.name.trim()&&GRADES.indexOf(r.grade)>=0&&typeof r.total==='number'&&r.total>0&&typeof r.correct==='number'&&typeof r.time==='number'}
-function merge(a,b){var m={},out=[];a.concat(b).forEach(function(r){if(!okRun(r))return;var o=m[r.id];if(!o){m[r.id]=r;out.push(r)}else if(!o.log&&r.log)o.log=r.log});return out.sort(function(x,y){return x.date-y.date})}
-function bestIds(list){var keep={};GRADES.forEach(function(g){COUNTS.forEach(function(c){['fast','acc'].forEach(function(md){board(g,c,md,list,1e9).forEach(function(r){keep[r.id]=1})})})});return keep}
+function merge(a,b){var m={},out=[];a.concat(b).forEach(function(r){if(!okRun(r))return;var o=m[r.id];if(!o){m[r.id]=r;out.push(r)}else{if(!o.log&&r.log)o.log=r.log;if(!o.sum&&r.sum)o.sum=r.sum}});return out.sort(function(x,y){return x.date-y.date})}
+function probKey(q){return q.op==='abc'?'🔤 '+q.a+' — '+(q.e||'')+' '+q.b:q.a+' '+q.op+' '+q.b}
+function summ(r){ // per-game summary for progress: from the full question log, or from the saved compact summary
+ if(!r.log&&r.sum)return r.sum;
+ var s={k:{},x:{},l:[0,0,0,0]};
+ (r.log||[]).forEach(function(q){var k=s.k[q.op]||(s.k[q.op]=[0,0,0]);k[0]++;if(q.ok)k[1]++;k[2]=Math.round((k[2]+(+q.t||0))*10)/10;
+  if(q.op!=='abc'){var li=q.st?0:2;s.l[li]++;if(q.ok)s.l[li+1]++}
+  var key=probKey(q),x=s.x[key]||(s.x[key]=[0,0,'']);x[0]++;if(!q.ok){x[1]++;if(q.pick&&x[2].indexOf(q.pick)<0)x[2]+=q.pick}});
+ return s;
+}
+function compact(r){var s=summ(r),x={};Object.keys(s.x).forEach(function(k){if(s.x[k][1])x[k]=s.x[k]});var c=Object.assign({},r);delete c.log;c.sum={k:s.k,x:x,l:s.l};return c}
 function prune(list){
- // never drops anyone's best run; only trims extra non-best runs once the list gets big
- if(list.length<=500)return list;
- var keep=bestIds(list),recent=list.slice(-350),rid={};recent.forEach(function(r){rid[r.id]=1});
- return list.filter(function(r){return keep[r.id]||rid[r.id]}).map(function(r){if(!rid[r.id]&&r.log){r=Object.assign({},r);delete r.log}return r});
+ // games are never deleted. Once the board is big, older games swap their question-by-question log
+ // for a small per-game summary (skill counts + missed problems), so progress stays complete.
+ if(list.length<=400)return list;
+ var cut=list.length-400;
+ return list.map(function(r,i){return i<cut&&r.log?compact(r):r});
 }
 function getRemote(){return fetch(API+'?t='+Date.now()+Math.random().toString(36).slice(2,6),{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('get '+r.status);return r.json()}).then(function(d){return d&&Array.isArray(d.runs)?d.runs.filter(okRun):[]})}
 function putRemote(list){return fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({v:1,runs:list})}).then(function(r){if(!r.ok)throw new Error('put '+r.status)})}
@@ -422,36 +432,76 @@ function openLb(){L.g=lastRun?lastRun.grade:S.grade;L.c=lastRun?lastRun.count:S.
 $('toLb').onclick=openLb;
 
 /* ---------- progress ---------- */
-var P={n:''};
+var P={k:null};
 var OPS=[['+','➕ Addition'],['−','➖ Subtraction'],['×','✖️ Multiplication'],['÷','➗ Division'],['abc','🔤 Alphabet']];
-function pc(a){return a.length?Math.round(a.filter(function(q){return q.ok}).length/a.length*100)+'% ('+a.length+')':'—'}
+function nk(n){return String(n).trim().toLowerCase()}
+function pct(ok,n){return n?Math.round(ok/n*100)+'%':'—'}
+function when(t){var d=new Date(t),now=new Date(),y=new Date(now);y.setDate(now.getDate()-1);
+ var tm=d.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+ if(d.toDateString()===now.toDateString())return 'Today '+tm;if(d.toDateString()===y.toDateString())return 'Yesterday '+tm;
+ return d.toLocaleDateString([], {month:'short',day:'numeric',year:d.getFullYear()===now.getFullYear()?undefined:'numeric'})}
+function playerList(){
+ var m={};runs.forEach(function(r){var k=nk(r.name),o=m[k]||(m[k]={k:k,name:r.name.trim(),games:0,ok:0,n:0,last:0});
+  o.games++;o.ok+=r.correct;o.n+=r.total;if(r.date>=o.last){o.last=r.date;o.name=r.name.trim()}});
+ return Object.keys(m).map(function(k){return m[k]}).sort(function(a,b){return b.last-a.last});
+}
 function drawProg(){
- var names=[],seen={};runs.forEach(function(r){var k=r.name.trim().toLowerCase();if(!seen[k]){seen[k]=1;names.push(r.name.trim())}});
- var el=$('progBody');
- if(!names.length){$('progChips').innerHTML='';el.innerHTML='<div class="card"><p class="small">Play a game first and progress will show up here!</p></div>';return}
- var lc=function(x){return x.trim().toLowerCase()};
- var hit=names.filter(function(n){return lc(n)===lc(P.n)})[0];P.n=hit||names[0];
- chips($('progChips'),names,P.n,function(n){return esc(n)},function(v){P.n=v;drawProg()});
- var mineR=runs.filter(function(r){return lc(r.name)===lc(P.n)});
- var lg=[];mineR.forEach(function(r){if(r.log)lg=lg.concat(r.log)});
- if(!lg.length){el.innerHTML='<div class="card"><p class="small">Play a new game to start collecting skill details!</p></div>';return}
- var h='<div class="card"><p class="big">'+lg.length+' questions answered • '+pc(lg).split(' ')[0]+' correct</p></div>';
- h+='<div class="card"><label class="t">By skill</label><table><tr><th>Skill</th><th>Tried</th><th>Right</th><th>Avg time</th><th></th></tr>';
- OPS.forEach(function(o){var x=lg.filter(function(q){return q.op===o[0]});if(!x.length)return;
-  var ok=x.filter(function(q){return q.ok}).length,acc=Math.round(ok/x.length*100),avg=x.reduce(function(s,q){return s+q.t},0)/x.length;
-  h+='<tr><td>'+o[1]+'</td><td>'+x.length+'</td><td>'+acc+'%</td><td>'+avg.toFixed(1)+'s</td><td>'+(acc>=90&&avg<=8?'💪':acc<70?'📚':'👍')+'</td></tr>'});
- h+='</table><p class="small">💪 strong • 👍 doing fine • 📚 needs practice</p></div>';
- var mt=lg.filter(function(q){return q.op!=='abc'});
- if(mt.length)h+='<div class="card"><label class="t">By layout (math)</label><p class="big">Stacked: '+pc(mt.filter(function(q){return q.st}))+'<br>Side by side: '+pc(mt.filter(function(q){return !q.st}))+'</p></div>';
- var m={};lg.forEach(function(q){var k=q.op==='abc'?'🔤 '+q.a+' — '+(q.e||'')+' '+q.b:q.a+' '+q.op+' '+q.b,o=m[k]||(m[k]={k:k,n:0,w:0,p:{}});o.n++;if(!q.ok){o.w++;if(q.pick)o.p[q.pick]=1}});
- var tr=Object.keys(m).map(function(k){return m[k]}).filter(function(o){return o.w}).sort(function(a,b){return b.w-a.w||b.n-a.n}).slice(0,8);
- h+='<div class="card"><label class="t">Trouble spots</label>'+(tr.length?'<table>'+tr.map(function(o){var pk=Object.keys(o.p);return '<tr><td>'+esc(o.k)+(pk.length?' <small>(picked '+pk.join(', ')+')</small>':'')+'</td><td>missed '+o.w+' of '+o.n+'</td></tr>'}).join('')+'</table>':'<p class="small">No misses yet — amazing! 🌟</p>')+'</div>';
- var rr=mineR.slice(-5).reverse();
- h+='<div class="card"><label class="t">Recent games</label><table>'+rr.map(function(r){return '<tr><td>'+gl(r.grade)+'</td><td>'+r.correct+'/'+r.total+'</td><td>'+fmt(r.time)+'</td></tr>'}).join('')+'</table></div>';
+ var el=$('progBody'),pl=playerList();
+ if(P.k&&!pl.some(function(p){return p.k===P.k}))P.k=null;
+ $('progBack').textContent=P.k?'← All players':'← Back';
+ if(P.k)return drawPlayer(el,pl.filter(function(p){return p.k===P.k})[0]);
+ $('progTitle').textContent='📊 My Progress';
+ if(!pl.length){el.innerHTML='<div class="card"><p class="small">Play a game first and progress will show up here!</p></div>';return}
+ var h='<div class="card"><label class="t">Tap a name to see their progress</label><table id="plist"><tr><th>Player</th><th>Games</th><th>Last played</th><th>Right</th></tr>';
+ pl.forEach(function(p){h+='<tr class="pl'+(p.k===nk(S.name)?' me':'')+'" data-k="'+esc(p.k)+'"><td><b>'+esc(p.name)+'</b> ›</td><td>'+p.games+'</td><td>'+when(p.last)+'</td><td>'+pct(p.ok,p.n)+'</td></tr>'});
+ el.innerHTML=h+'</table><p class="small">'+pl.length+' player'+(pl.length===1?'':'s')+(online===true?' • ☁️ from every phone':online===false?' • 📱 this phone only right now':'')+'</p></div>';
+ el.querySelectorAll('tr.pl').forEach(function(tr){tr.onclick=function(){click();P.k=tr.getAttribute('data-k');drawProg();window.scrollTo(0,0)}});
+}
+function drawPlayer(el,p){
+ var my=runs.filter(function(r){return nk(r.name)===p.k}).sort(function(a,b){return a.date-b.date});
+ $('progTitle').textContent='📊 '+p.name;
+ var K={},X={},Ly=[0,0,0,0],qn=0,ttime=0;
+ my.forEach(function(r){var s=summ(r);ttime+=r.time;
+  Object.keys(s.k).forEach(function(op){var a=K[op]||(K[op]=[0,0,0]),b=s.k[op];a[0]+=b[0];a[1]+=b[1];a[2]+=b[2];qn+=b[0]});
+  for(var i=0;i<4;i++)Ly[i]+=s.l[i];
+  Object.keys(s.x).forEach(function(k){var a=X[k]||(X[k]=[0,0,{}]),b=s.x[k];a[0]+=b[0];a[1]+=b[1];(b[2]||'').split('').forEach(function(c){a[2][c]=1})});
+ });
+ var tot=my.reduce(function(s,r){return s+r.total},0),ok=my.reduce(function(s,r){return s+r.correct},0);
+ var h='<div class="card"><p class="big"><b>'+my.length+'</b> game'+(my.length===1?'':'s')+' • <b>'+tot+'</b> questions • <b>'+pct(ok,tot)+'</b> right</p><p class="small">First played '+when(my[0].date)+' • Last played '+when(my[my.length-1].date)+' • Total time '+fmt(ttime)+'</p></div>';
+ // trend
+ h+='<div class="card"><label class="t">📈 Trend</label>';
+ if(my.length<4)h+='<p class="small">Play '+(4-my.length)+' more game'+(my.length===3?'':'s')+' to see a trend.</p>';
+ else{var n=Math.min(5,Math.floor(my.length/2)),rec=my.slice(-n),ear=my.slice(0,my.length-n);
+  var ac=function(a){var o=0,t=0;a.forEach(function(r){o+=r.correct;t+=r.total});return o/t*100},sp=function(a){var s=0,t=0;a.forEach(function(r){s+=r.time;t+=r.total});return s/t};
+  var ra=ac(rec),ea=ac(ear),rs=sp(rec),es=sp(ear),d=ra-ea;
+  var verdict=d>=5?'⬆️ Getting more right!':d<=-5?'⬇️ Fewer right lately — try some practice games.':'➡️ Staying steady.';
+  if(rs<es*0.9)verdict+=' ⚡ Getting faster!';else if(rs>es*1.15)verdict+=' 🐢 A bit slower lately.';
+  h+='<table><tr><th></th><th>Right</th><th>Sec / question</th></tr><tr><td>Last '+n+' games</td><td>'+Math.round(ra)+'%</td><td>'+rs.toFixed(1)+'s</td></tr><tr><td>Earlier '+ear.length+' games</td><td>'+Math.round(ea)+'%</td><td>'+es.toFixed(1)+'s</td></tr></table><p class="big">'+verdict+'</p>'}
+ h+='</div>';
+ // by level + best scores
+ h+='<div class="card"><label class="t">🏅 By level (best scores)</label><table><tr><th>Level</th><th>Games</th><th>Avg</th><th>Best</th><th>Best time</th></tr>';
+ GRADES.forEach(function(g){var x=my.filter(function(r){return r.grade===g});if(!x.length)return;
+  var o=0,t=0,ba=0,bt=null;x.forEach(function(r){o+=r.correct;t+=r.total;var a=r.correct/r.total;if(a>ba)ba=a;if(!bt||r.time/r.total<bt.time/bt.total)bt=r});
+  h+='<tr><td>'+gl(g)+'</td><td>'+x.length+'</td><td>'+pct(o,t)+'</td><td>'+Math.round(ba*100)+'%</td><td>'+fmt(bt.time)+' <small>('+bt.total+'q)</small></td></tr>'});
+ h+='</table></div>';
+ // by skill
+ h+='<div class="card"><label class="t">By skill</label>';
+ if(!qn)h+='<p class="small">Play a new game to start collecting skill details!</p>';
+ else{h+='<table><tr><th>Skill</th><th>Tried</th><th>Right</th><th>Avg time</th><th></th></tr>';
+  OPS.forEach(function(o){var a=K[o[0]];if(!a||!a[0])return;var acc=Math.round(a[1]/a[0]*100),avg=a[2]/a[0];
+   h+='<tr><td>'+o[1]+'</td><td>'+a[0]+'</td><td>'+acc+'%</td><td>'+avg.toFixed(1)+'s</td><td>'+(acc>=90&&avg<=8?'💪':acc<70?'📚':'👍')+'</td></tr>'});
+  h+='</table><p class="small">💪 strong • 👍 doing fine • 📚 needs practice</p>'}
+ h+='</div>';
+ if(Ly[0]+Ly[2])h+='<div class="card"><label class="t">By layout (math)</label><p class="big">Stacked: '+(Ly[0]?pct(Ly[1],Ly[0])+' ('+Ly[0]+')':'—')+'<br>Side by side: '+(Ly[2]?pct(Ly[3],Ly[2])+' ('+Ly[2]+')':'—')+'</p></div>';
+ var tr=Object.keys(X).map(function(k){return {k:k,n:X[k][0],w:X[k][1],p:Object.keys(X[k][2])}}).filter(function(o){return o.w}).sort(function(a,b){return b.w-a.w||b.n-a.n}).slice(0,8);
+ h+='<div class="card"><label class="t">Trouble spots</label>'+(tr.length?'<table>'+tr.map(function(o){return '<tr><td>'+esc(o.k)+(o.p.length?' <small>(picked '+esc(o.p.join(', '))+')</small>':'')+'</td><td>missed '+o.w+' of '+o.n+'</td></tr>'}).join('')+'</table>':'<p class="small">No misses yet — amazing! 🌟</p>')+'</div>';
+ h+='<div class="card"><label class="t">Recent games</label><table><tr><th>When</th><th>Level</th><th>Score</th><th>Time</th></tr>'+my.slice(-10).reverse().map(function(r){return '<tr><td>'+when(r.date)+'</td><td>'+gl(r.grade)+'</td><td>'+r.correct+'/'+r.total+'</td><td>'+fmt(r.time)+'</td></tr>'}).join('')+'</table></div>';
  el.innerHTML=h;
 }
-function openProg(){P.n=lastRun?lastRun.name:S.name;drawProg();show('prog');sync()}
-$('toProg').onclick=openProg;$('rProg').onclick=openProg;$('progBack').onclick=function(){show('home')};$('rLb').onclick=openLb;$('lbBack').onclick=function(){show('home')};
+function openProg(){P.k=null;drawProg();show('prog');sync()}
+$('toProg').onclick=openProg;$('rProg').onclick=openProg;
+$('progBack').onclick=function(){click();if(P.k){P.k=null;drawProg();window.scrollTo(0,0)}else show('home')};
+$('rLb').onclick=openLb;$('lbBack').onclick=function(){show('home')};
 mine();sync();
 })();
 </script>
