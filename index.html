@@ -422,35 +422,52 @@ $('rHome').onclick=function(){show('home')};
 
 /* ---------- leaderboards ---------- */
 var L={g:1,c:10,m:'fast'};
-function pen5(r){return r.time+5*(r.total-r.correct)}
-function board(g,c,mode,list,lim){
- var best={};
- (list||runs).forEach(function(r){
-  if(r.grade!==g||r.count!==c)return;
-  var acc=r.correct/r.total;
-  var k=r.name.trim().toLowerCase(),o=best[k];
-  var better=!o||(mode==='fast'?(pen5(r)<pen5(o)||(pen5(r)===pen5(o)&&r.date<o.date)):(acc>o.correct/o.total||(acc===o.correct/o.total&&(r.time<o.time||(r.time===o.time&&r.date<o.date)))));
-  if(better)best[k]=r;
- });
- return Object.keys(best).map(function(k){return best[k]}).sort(function(a,b){
-  var aa=a.correct/a.total,bb=b.correct/b.total;
-  return (mode==='fast'?pen5(a)-pen5(b):(bb-aa||a.time-b.time))||a.date-b.date;
- }).slice(0,lim||10);
+var MISS_PENALTY=5;   // minimum seconds added for each wrong answer on the Fastest board
+var LB_SIZE=100;      // places shown on each board (every game is listed, players can appear many times)
+function misses(r){return r.total-r.correct}
+function refRun(list){var ref=null;list.forEach(function(r){if(!misses(r)&&(!ref||r.time<ref.time||(r.time===ref.time&&r.date<ref.date)))ref=r});return ref}
+function penaltyFor(list){var ref=refRun(list);return ref?Math.max(MISS_PENALTY,Math.round(ref.time/ref.total*10)/10):MISS_PENALTY}
+function adj(r,p){return Math.round((r.time+(p===undefined?MISS_PENALTY:p)*misses(r))*10)/10}
+/*
+ Fastest ranking, per board (one level + one question count):
+  1. No 100% game on the board: order by adjusted time = raw time + MISS_PENALTY (5 s) x misses.
+  2. Otherwise the reference run is the fastest 100% game; R = its seconds per question.
+     Each miss costs P = max(MISS_PENALTY, R) seconds, so a miss always costs at least as much as a
+     perfect player spends on a question (that is what stops an all-wrong speed run from winning).
+     A game with misses "qualifies" only if its raw seconds per question is at most R/2 (twice as fast).
+     - Qualifying games, the reference run and the other 100% games are ordered by adjusted time
+       (raw + P x misses); a 100% game's adjusted time is its raw time.
+     - Non-qualifying games can never be above the reference run: their sort key is raised to the
+       reference run's time, max(adjusted, ref time), and on equal keys they go after games that qualify.
+       Below the reference run they mix with slower 100% games by adjusted time.
+  Ties: lower adjusted time, then the earlier game.
+*/
+function fastCmp(list){
+ var ref=refRun(list),R=ref?ref.time/ref.total:0,P=penaltyFor(list);
+ function low(r){return !!ref&&misses(r)>0&&r.time/r.total>R/2}   // has misses and isn't twice as fast as the reference
+ function key(r){return low(r)?Math.max(adj(r,P),ref.time):adj(r,P)}
+ return function(a,b){return (key(a)-key(b))||((low(a)?1:0)-(low(b)?1:0))||(adj(a,P)-adj(b,P))||(a.date-b.date)};
 }
-function players(g,c){var m={};runs.forEach(function(r){if(r.grade===g&&(c===undefined||r.count===c))m[r.name.trim().toLowerCase()]=1});return Object.keys(m).length}
+function accCmp(a,b){return (b.correct/b.total-a.correct/a.total)||(a.time-b.time)||(a.date-b.date)}
+function board(g,c,mode,list,lim){
+ var rows=(list||runs).filter(function(r){return r.grade===g&&r.count===c});
+ return rows.sort(mode==='fast'?fastCmp(rows):accCmp).slice(0,lim||LB_SIZE);
+}
+function players(g,c){return runs.filter(function(r){return r.grade===g&&(c===undefined||r.count===c)}).length}  // games on that board
 function badge(n){return n?' <small>('+n+')</small>':''}
 function drawLb(){
  chips($('lbGrade'),GRADES,L.g,function(g){return gl(g)+badge(players(g))},function(v){L.g=v;drawLb()});
  chips($('lbCount'),COUNTS,L.c,function(c){return c+badge(players(L.g,c))},function(v){L.c=v;drawLb()});
  chips($('lbMode'),['fast','acc'],L.m,function(m){return m==='fast'?'⚡ Fastest':'🎯 Most Accurate'},function(v){L.m=v;drawLb()});
- var rows=board(L.g,L.c,L.m),me=S.name.trim().toLowerCase();
+ var rows=board(L.g,L.c,L.m),me=S.name.trim().toLowerCase(),P=penaltyFor(runs.filter(function(r){return r.grade===L.g&&r.count===L.c}));
  var h='<table><tr><th>#</th><th>Player</th><th>Score</th><th>Time</th></tr>';
  while(rows.length<10)rows.push(null);
  rows.forEach(function(r,i){if(!r){h+='<tr><td>'+(i+1)+'</td><td colspan="3" style="color:var(--mute)">— open spot —</td></tr>';return}
-  var medal=i===0?'👑':i===1?'🥈':i===2?'🥉':(i+1);
-  h+='<tr class="'+(r.name.trim().toLowerCase()===me?'me':'')+'"><td>'+medal+'</td><td>'+esc(r.name)+'</td><td>'+Math.round(r.correct/r.total*100)+'%</td><td>'+fmt(L.m==='fast'?pen5(r):r.time)+'</td></tr>'});
+  var medal=i===0?'👑':i===1?'🥈':i===2?'🥉':(i+1),m=misses(r);
+  var tm=L.m==='fast'?fmt(adj(r,P))+(m?' <small>('+fmt(r.time)+' +'+Math.round(P*m)+'s, '+m+' ✗)</small>':''):fmt(r.time);
+  h+='<tr class="'+(r.name.trim().toLowerCase()===me?'me':'')+(lastRun&&r.id===lastRun.id?' me':'')+'"><td>'+medal+'</td><td>'+esc(r.name)+'</td><td>'+Math.round(r.correct/r.total*100)+'%</td><td>'+tm+'</td></tr>'});
  $('lbTable').innerHTML=h+'</table>';
- $('lbNote').textContent=(L.m==='fast'?'Fastest = your time plus 5 seconds for each miss.':'Most Accurate ranks by percent correct, then by time.')+' Each player shows once with their best game. Numbers in ( ) = players on that board.'+(online===true?' ☁️ Saved online — every phone sees these scores.':online===false?' 📱 Offline right now — scores are saved on this phone and will go online automatically.':' ⏳ Connecting…');
+ $('lbNote').textContent=(L.m==='fast'?'Each wrong answer adds '+(P>MISS_PENALTY?P.toFixed(1):MISS_PENALTY)+' seconds (the fastest perfect game\'s time per question, never less than '+MISS_PENALTY+'), and a game with mistakes can only beat the fastest perfect game if it was at least twice as fast per question.':'Most Accurate ranks by percent correct, then by time.')+' Every game is listed (top '+LB_SIZE+'). Numbers in ( ) = games on that board.'+(online===true?' ☁️ Saved online — every phone sees these scores.':online===false?' 📱 Offline right now — scores are saved on this phone and will go online automatically.':' ⏳ Connecting…');
 }
 function openLb(){L.g=lastRun?lastRun.grade:S.grade;L.c=lastRun?lastRun.count:S.count;drawLb();show('lb');sync()}
 $('toLb').onclick=openLb;
